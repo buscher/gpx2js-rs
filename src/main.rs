@@ -24,11 +24,11 @@ struct CoordsFile {
 
 fn round_val(value: f64, digits: u32) -> f64 {
     let y = 10i64.pow(digits) as f64;
-    return (value * y).round() / y;
+    (value * y).round() / y
 }
 
 fn in_line(a: &LatLng, b: &LatLng, c: &LatLng) -> bool {
-    return (a.lat - c.lat) * (c.lng - b.lng) == (c.lat - b.lat) * (a.lng - c.lng);
+    (a.lat - c.lat) * (c.lng - b.lng) == (c.lat - b.lat) * (a.lng - c.lng)
 }
 
 struct Options {
@@ -37,7 +37,7 @@ struct Options {
     gpx_path_str: String,
 }
 
-fn main() {
+fn parse_args() -> Options {
     let mut options = Options {
         verbose: false,
         output_path_str: "".to_string(),
@@ -65,11 +65,10 @@ fn main() {
         ap.parse_args_or_exit();
     }
 
-    if options.verbose {
-        println!("Input directory: {}", options.gpx_path_str);
-        println!("Output directory: {}", options.output_path_str);
-    }
-    println!("Reading files...");
+    options
+}
+
+fn read_files(options: &Options) -> Vec<CoordsFile> {
     let input_path = Path::new(&options.gpx_path_str);
 
     let paths = fs::read_dir(input_path).unwrap();
@@ -107,37 +106,40 @@ fn main() {
                 Ok(Event::Eof) => break,
 
                 Ok(Event::Start(e)) => {
-                    match e.name().as_ref() {
-                        b"trkpt" => {
+                    if e.name().as_ref() == b"trkpt" {
+                        let mut lat: f64 = 0.0;
+                        let mut lng: f64 = 0.0;
 
-                            let mut lat: f64 = 0.0;
-                            let mut lng: f64 = 0.0;
+                        for attr_result in e.attributes() {
+                            // TODO handle this properly
+                            let a = attr_result.unwrap();
 
-                            for attr_result in e.attributes() {
-
-                                // TODO handle this properly
-                                let a = attr_result.unwrap();
-
-                                match a.key.as_ref() {
-                                    b"lat" => lat = (std::str::from_utf8(&a.value)).unwrap().parse::<f64>().unwrap(),
-                                    b"lon" => lng = (std::str::from_utf8(&a.value)).unwrap().parse::<f64>().unwrap(),
-                                    _ => (),
+                            match a.key.as_ref() {
+                                b"lat" => {
+                                    lat = (std::str::from_utf8(&a.value))
+                                        .unwrap()
+                                        .parse::<f64>()
+                                        .unwrap()
                                 }
-                            }
-
-                            if options.verbose {
-                                println!("Found point {} {}", lat, lng);
-                            }
-
-                            if lat != 0.0 && lng != 0.0 {
-                                coord_file.coords.push(LatLng { lat: lat, lng: lng });
-                            } else {
-                                if options.verbose {
-                                    println!("Skipping invalid trpkt");
+                                b"lon" => {
+                                    lng = (std::str::from_utf8(&a.value))
+                                        .unwrap()
+                                        .parse::<f64>()
+                                        .unwrap()
                                 }
-                            }
-                        },
-                        _ => (),
+                                _ => (),
+                                }
+                        }
+
+                        if options.verbose {
+                            println!("Found point {} {}", lat, lng);
+                        }
+
+                        if lat != 0.0 && lng != 0.0 {
+                            coord_file.coords.push(LatLng { lat, lng });
+                        } else if options.verbose {
+                            println!("Skipping invalid trpkt");
+                        }
                     }
                 }
                 _ => (),
@@ -147,40 +149,45 @@ fn main() {
         parsed_files.push(coord_file);
     }
 
-    // Test
-    println!("Parsed files: {}", parsed_files.len());
-    let mut sum = 0;
-    for file in &parsed_files {
-        sum += file.coords.len();
-    }
-    println!("Parsed points: {}", sum);
+    parsed_files
+}
 
+fn round_values(parsed_files: &mut Vec<CoordsFile>, options: &Options) {
     // Round values, example: 51.329793, 6 digits
-
-    println!("Rounding values...");
-    for file in &mut parsed_files {
+    for file in parsed_files {
         for coord in &mut file.coords {
-            //println!("Before {} {}", coord.lat, coord.lng);
+            if options.verbose {
+                println!("Before {} {}", coord.lat, coord.lng);
+            }
 
             coord.lat = round_val(coord.lat, 6);
             coord.lng = round_val(coord.lng, 6);
-            //println!("After {} {}", coord.lat, coord.lng);
+
+            if options.verbose {
+                println!("After {} {}", coord.lat, coord.lng);
+            }
         }
     }
+}
 
+fn remove_duplicates(parsed_files: &mut Vec<CoordsFile>, options: &Options) {
     // Remove duplicates
-    println!("Removing duplicates in file...");
-    for file in &mut parsed_files {
-        //println!("Before dedup {}", file.coords.len());
+    for file in parsed_files {
+        if options.verbose {
+            println!("Before dedup {}", file.coords.len());
+        }
         file.coords.dedup();
-        //println!("After dedup {}", file.coords.len());
+        if options.verbose {
+            println!("After dedup {}", file.coords.len());
+        }
     }
+}
 
+fn remove_files_without_new_points(parsed_files: &mut Vec<CoordsFile>, options: &Options) {
     // Filter files without any new points
-    println!("Removing tracks without new points...");
     let mut map: HashMap<String, HashSet<String>> = HashMap::new();
     let mut remove_files: Vec<String> = Vec::new();
-    for file in &parsed_files {
+    parsed_files.iter_mut().for_each(|file| {
         let mut new_points = false;
         for coord in &file.coords {
             let lat = round_val(coord.lat, 4).to_string();
@@ -202,10 +209,10 @@ fn main() {
             }
         }
 
-        if false == new_points {
+        if !new_points {
             remove_files.push(file.name.clone());
         }
-    }
+    });
 
     if options.verbose {
         println!(
@@ -224,10 +231,11 @@ fn main() {
     if options.verbose {
         println!("Remaining files: {}", parsed_files.len());
     }
+}
 
+fn remove_straight_line_points(parsed_files: &mut Vec<CoordsFile>, options: &Options) {
     // Remove points on the same line
-    println!("Removing points on a straight line...");
-    for file in &mut parsed_files {
+    for file in parsed_files {
         let mut removed_points = 0;
         let coords = &mut file.coords;
         let old_coords = coords.len();
@@ -261,18 +269,13 @@ fn main() {
             );
         }
     }
+}
 
-    println!("Final files: {}", parsed_files.len());
-    let mut sum = 0;
-    for file in &parsed_files {
-        sum += file.coords.len();
-    }
-    println!("Final points: {}", sum);
-
+fn output_result_files(parsed_files: &Vec<CoordsFile>, options: &Options) {
     // Final step: write new files
     fs::create_dir_all(&options.output_path_str).unwrap();
 
-    for file in &parsed_files {
+    for file in parsed_files {
         let base_path = Path::new(&file.name);
         let filename = base_path.file_name().unwrap();
         let filename_str = filename.to_str().unwrap().replace(".gpx", ".js");
@@ -299,4 +302,45 @@ fn main() {
         }
         out_file.write(b"];").unwrap();
     }
+}
+
+fn main() {
+    let options = parse_args();
+
+    if options.verbose {
+        println!("Input directory: {}", options.gpx_path_str);
+        println!("Output directory: {}", options.output_path_str);
+    }
+    println!("Reading files...");
+    let mut parsed_files = read_files(&options);
+
+    // Test
+    println!("Parsed files: {}", parsed_files.len());
+
+    let mut sum = 0;
+    for file in &parsed_files {
+        sum += file.coords.len();
+    }
+    println!("Parsed points: {}", sum);
+
+    println!("Rounding values...");
+    round_values(&mut parsed_files, &options);
+
+    println!("Removing duplicates in file...");
+    remove_duplicates(&mut parsed_files, &options);
+
+    println!("Removing tracks without new points...");
+    remove_files_without_new_points(&mut parsed_files, &options);
+
+    println!("Removing points on a straight line...");
+    remove_straight_line_points(&mut parsed_files, &options);
+
+    println!("Final files: {}", parsed_files.len());
+    let mut sum = 0;
+    for file in &parsed_files {
+        sum += file.coords.len();
+    }
+    println!("Final points: {}", sum);
+
+    output_result_files(&parsed_files, &options);
 }
