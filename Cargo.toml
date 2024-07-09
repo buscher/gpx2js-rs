@@ -5,4 +5,4 @@ edition = "2021"
 
 [dependencies]
 argparse = "0.2"
-xml = "0.8"
+quick-xml = "0.36"

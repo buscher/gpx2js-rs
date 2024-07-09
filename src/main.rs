@@ -2,14 +2,14 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fs;
 use std::fs::File;
-use std::io::BufReader;
 use std::io::Write;
 use std::path::Path;
 
 use argparse::ArgumentParser;
 use argparse::Store;
 use argparse::StoreTrue;
-use xml::reader::{EventReader, XmlEvent};
+use quick_xml::events::Event;
+use quick_xml::reader::Reader;
 
 #[derive(PartialEq)]
 struct LatLng {
@@ -74,8 +74,9 @@ fn main() {
 
     let paths = fs::read_dir(input_path).unwrap();
 
-    let mut parsed_files: Vec<CoordsFile> = Vec::with_capacity(0);
+    let mut parsed_files: Vec<CoordsFile> = Vec::new();
 
+    let mut buf = Vec::new();
     for path in paths {
         let fullpath = path.unwrap().path().display().to_string();
         if options.verbose {
@@ -94,51 +95,55 @@ fn main() {
             coords: vec![],
         };
 
-        let file = File::open(fullpath).unwrap();
-        let file = BufReader::new(file);
+        let reader_from_file = Reader::from_file(fullpath);
+        // TODO handle this properly
+        let mut reader = reader_from_file.unwrap();
+        reader.config_mut().trim_text(true);
 
-        let parser = EventReader::new(file);
-        for e in parser {
-            match e {
-                Ok(XmlEvent::StartElement {
-                    name, attributes, ..
-                }) => {
-                    if name.local_name == "trkpt" {
-                        let mut lat: f64 = 0.0;
-                        let mut lng: f64 = 0.0;
-                        for attr in attributes {
-                            if attr.name.local_name == "lat" {
-                                lat = attr.value.parse::<f64>().unwrap();
-                                if options.verbose {
-                                    println!("Found point: {} {}", attr.name, attr.value);
+        loop {
+            match reader.read_event_into(&mut buf) {
+                Err(e) => panic!("Error at position {}: {:?}", reader.buffer_position(), e),
+                // exits the loop when reaching end of file
+                Ok(Event::Eof) => break,
+
+                Ok(Event::Start(e)) => {
+                    match e.name().as_ref() {
+                        b"trkpt" => {
+
+                            let mut lat: f64 = 0.0;
+                            let mut lng: f64 = 0.0;
+
+                            for attr_result in e.attributes() {
+
+                                // TODO handle this properly
+                                let a = attr_result.unwrap();
+
+                                match a.key.as_ref() {
+                                    b"lat" => lat = (std::str::from_utf8(&a.value)).unwrap().parse::<f64>().unwrap(),
+                                    b"lon" => lng = (std::str::from_utf8(&a.value)).unwrap().parse::<f64>().unwrap(),
+                                    _ => (),
                                 }
                             }
-                            if attr.name.local_name == "lon" {
-                                lng = attr.value.parse::<f64>().unwrap();
-                                if options.verbose {
-                                    println!("Found point: {} {}", attr.name, attr.value);
-                                }
-                            }
-                        }
 
-                        if lat != 0.0 || lng != 0.0 {
-                            coord_file.coords.push(LatLng { lat: lat, lng: lng });
-                        } else {
                             if options.verbose {
-                                println!("Skipping invalid trpkt");
+                                println!("Found point {} {}", lat, lng);
                             }
-                        }
+
+                            if lat != 0.0 && lng != 0.0 {
+                                coord_file.coords.push(LatLng { lat: lat, lng: lng });
+                            } else {
+                                if options.verbose {
+                                    println!("Skipping invalid trpkt");
+                                }
+                            }
+                        },
+                        _ => (),
                     }
                 }
-                Err(e) => {
-                    eprintln!("Error: {e}");
-                    break;
-                }
-                // There's more: https://docs.rs/xml-rs/latest/xml/reader/enum.XmlEvent.html
-                _ => {}
+                _ => (),
             }
+            buf.clear()
         }
-
         parsed_files.push(coord_file);
     }
 
