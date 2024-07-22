@@ -8,8 +8,6 @@ use std::path::Path;
 use argparse::ArgumentParser;
 use argparse::Store;
 use argparse::StoreTrue;
-use quick_xml::events::Event;
-use quick_xml::reader::Reader;
 
 #[derive(PartialEq)]
 struct LatLng {
@@ -19,6 +17,7 @@ struct LatLng {
 
 struct CoordsFile {
     name: String,
+    trk_type: String,
     coords: Vec<LatLng>,
 }
 
@@ -75,7 +74,6 @@ fn read_files(options: &Options) -> Vec<CoordsFile> {
 
     let mut parsed_files: Vec<CoordsFile> = Vec::new();
 
-    let mut buf = Vec::new();
     for path in paths {
         let fullpath = path.unwrap().path().display().to_string();
         if options.verbose {
@@ -91,58 +89,48 @@ fn read_files(options: &Options) -> Vec<CoordsFile> {
 
         let mut coord_file = CoordsFile {
             name: fullpath.clone(),
+            trk_type: "".to_string(),
             coords: vec![],
         };
 
-        let reader_from_file = Reader::from_file(fullpath);
-        let mut reader = reader_from_file.unwrap();
-        reader.config_mut().trim_text(true);
-
-        loop {
-            match reader.read_event_into(&mut buf) {
-                Err(e) => panic!("Error at position {}: {:?}", reader.buffer_position(), e),
-                // exits the loop when reaching end of file
-                Ok(Event::Eof) => break,
-
-                Ok(Event::Start(e)) => {
-                    if e.name().as_ref() == b"trkpt" {
-                        let mut lat: f64 = f64::NAN;
-                        let mut lng: f64 = f64::NAN;
-
-                        for attr_result in e.attributes() {
-                            let a = attr_result.unwrap();
-
-                            match a.key.as_ref() {
-                                b"lat" => {
-                                    lat = (std::str::from_utf8(&a.value))
-                                        .unwrap()
-                                        .parse::<f64>()
-                                        .unwrap()
-                                }
-                                b"lon" => {
-                                    lng = (std::str::from_utf8(&a.value))
-                                        .unwrap()
-                                        .parse::<f64>()
-                                        .unwrap()
-                                }
-                                _ => (),
-                            }
-                        }
-
-                        if options.verbose {
-                            println!("Found point {} {}", lat, lng);
-                        }
-
-                        if lat.is_normal() && lng.is_normal() {
-                            coord_file.coords.push(LatLng { lat, lng });
-                        } else if options.verbose {
-                            println!("Skipping invalid trpkt {} {}", lat, lng);
-                        }
-                    }
-                }
-                _ => (),
+        let text = std::fs::read_to_string(fullpath).unwrap();
+        let opt = roxmltree::ParsingOptions {
+            allow_dtd: true,
+            ..roxmltree::ParsingOptions::default()
+        };
+        let doc = match roxmltree::Document::parse_with_options(&text, opt) {
+            Ok(v) => v,
+            Err(e) => {
+                println!("Skipping invalid file: {}", e);
+                continue;
             }
-            buf.clear()
+        };
+
+        let trk_node = doc.descendants().find(|n| n.has_tag_name("trk")).unwrap();
+        let trk_type = trk_node
+            .children()
+            .find(|n| n.has_tag_name("type"))
+            .unwrap();
+        coord_file.trk_type = trk_type.text().unwrap().to_string();
+        if options.verbose {
+            println!("Found trk type {}", coord_file.trk_type);
+        }
+
+        let trk_seg = trk_node
+            .children()
+            .find(|n| n.has_tag_name("trkseg"))
+            .unwrap();
+        for trkpt in trk_seg.children() {
+            if trkpt.has_attribute("lat") && trkpt.has_attribute("lon") {
+                let lat = trkpt.attribute("lat").unwrap().parse::<f64>().unwrap();
+                let lng = trkpt.attribute("lon").unwrap().parse::<f64>().unwrap();
+
+                if options.verbose {
+                    println!("Found point {} {}", lat, lng);
+                }
+
+                coord_file.coords.push(LatLng { lat, lng });
+            }
         }
         parsed_files.push(coord_file);
     }
