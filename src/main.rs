@@ -95,7 +95,6 @@ fn read_files(options: &Options) -> Vec<CoordsFile> {
         };
 
         let reader_from_file = Reader::from_file(fullpath);
-        // TODO handle this properly
         let mut reader = reader_from_file.unwrap();
         reader.config_mut().trim_text(true);
 
@@ -107,11 +106,10 @@ fn read_files(options: &Options) -> Vec<CoordsFile> {
 
                 Ok(Event::Start(e)) => {
                     if e.name().as_ref() == b"trkpt" {
-                        let mut lat: f64 = 0.0;
-                        let mut lng: f64 = 0.0;
+                        let mut lat: f64 = f64::NAN;
+                        let mut lng: f64 = f64::NAN;
 
                         for attr_result in e.attributes() {
-                            // TODO handle this properly
                             let a = attr_result.unwrap();
 
                             match a.key.as_ref() {
@@ -128,17 +126,17 @@ fn read_files(options: &Options) -> Vec<CoordsFile> {
                                         .unwrap()
                                 }
                                 _ => (),
-                                }
+                            }
                         }
 
                         if options.verbose {
                             println!("Found point {} {}", lat, lng);
                         }
 
-                        if lat != 0.0 && lng != 0.0 {
+                        if lat.is_normal() && lng.is_normal() {
                             coord_file.coords.push(LatLng { lat, lng });
                         } else if options.verbose {
-                            println!("Skipping invalid trpkt");
+                            println!("Skipping invalid trpkt {} {}", lat, lng);
                         }
                     }
                 }
@@ -289,18 +287,18 @@ fn output_result_files(parsed_files: &Vec<CoordsFile>, options: &Options) {
 
         let mut out_file = File::create(file_out_path).unwrap();
         let var_name = filename.to_str().unwrap().replace(".gpx", "");
-        out_file.write(b"var ").unwrap();
-        out_file.write(var_name.as_bytes()).unwrap();
-        out_file.write(b" = [").unwrap();
+        out_file.write_all(b"var ").unwrap();
+        out_file.write_all(var_name.as_bytes()).unwrap();
+        out_file.write_all(b" = [").unwrap();
         for coord in &file.coords {
             let mut coord_str =
                 String::from("[") + &coord.lat.to_string() + "," + &coord.lng.to_string() + "]";
             if coord != file.coords.last().unwrap() {
                 coord_str += ",";
             }
-            out_file.write(coord_str.as_bytes()).unwrap();
+            out_file.write_all(coord_str.as_bytes()).unwrap();
         }
-        out_file.write(b"];").unwrap();
+        out_file.write_all(b"];").unwrap();
     }
 }
 
