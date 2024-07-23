@@ -290,6 +290,15 @@ fn output_result_files(parsed_files: &Vec<CoordsFile>, options: &Options) {
     }
 }
 
+fn count_points(parsed_files: &Vec<CoordsFile>) -> usize {
+    let mut sum = 0;
+    for file in parsed_files {
+        sum += file.coords.len();
+    }
+
+    sum
+}
+
 fn main() {
     let options = parse_args();
 
@@ -302,12 +311,7 @@ fn main() {
 
     // Test
     println!("Parsed files: {}", parsed_files.len());
-
-    let mut sum = 0;
-    for file in &parsed_files {
-        sum += file.coords.len();
-    }
-    println!("Parsed points: {}", sum);
+    println!("Parsed points: {}", count_points(&parsed_files));
 
     println!("Rounding values...");
     round_values(&mut parsed_files, &options);
@@ -322,11 +326,7 @@ fn main() {
     remove_straight_line_points(&mut parsed_files, &options);
 
     println!("Final files: {}", parsed_files.len());
-    let mut sum = 0;
-    for file in &parsed_files {
-        sum += file.coords.len();
-    }
-    println!("Final points: {}", sum);
+    println!("Final points: {}", count_points(&parsed_files));
 
     output_result_files(&parsed_files, &options);
 }
