@@ -112,6 +112,10 @@ fn read_files(options: &Options) -> Vec<CoordsFile> {
             .find(|n| n.has_tag_name("type"))
             .unwrap();
         coord_file.trk_type = trk_type.text().unwrap().to_string();
+        // treat hiking and walking as the same
+        if coord_file.trk_type == "hiking" {
+            coord_file.trk_type = "walking".to_string();
+        }
         if options.verbose {
             println!("Found trk type {}", coord_file.trk_type);
         }
@@ -170,32 +174,53 @@ fn remove_duplicates(parsed_files: &mut Vec<CoordsFile>, options: &Options) {
 }
 
 fn remove_files_without_new_points(parsed_files: &mut Vec<CoordsFile>, options: &Options) {
-    // Filter files without any new points
-    let mut map: HashMap<String, HashSet<String>> = HashMap::new();
+    // Check individually:
+    // - hiking and walking
+    // - running
+    // - cycling
+    let activity_types = ["walking", "running", "cycling"];
     let mut remove_files: Vec<String> = Vec::new();
-    parsed_files.iter_mut().for_each(|file| {
-        let mut new_points = false;
-        for coord in &file.coords {
-            let lat = round_val(coord.lat, 4).to_string();
-            let lng = round_val(coord.lng, 4).to_string();
 
-            if map.contains_key(&lat) {
-                let hash_coords = map.get_mut(&lat).unwrap();
-                if hash_coords.contains(&lng) {
-                    continue;
-                } else {
-                    hash_coords.insert(lng);
-                    new_points = true;
+    for atype in activity_types {
+        // Filter files without any new points
+        let mut map: HashMap<String, HashSet<String>> = HashMap::new();
+        parsed_files.iter_mut().for_each(|file| {
+
+            if file.trk_type == atype {
+                let mut new_points: bool = false;
+                for coord in &file.coords {
+                    let lat = round_val(coord.lat, 4).to_string();
+                    let lng = round_val(coord.lng, 4).to_string();
+
+                    if map.contains_key(&lat) {
+                        let hash_coords = map.get_mut(&lat).unwrap();
+                        if hash_coords.contains(&lng) {
+                            continue;
+                        } else {
+                            hash_coords.insert(lng);
+                            new_points = true;
+                        }
+                    } else {
+                        let mut new_coords = HashSet::new();
+                        new_coords.insert(lng);
+                        map.insert(lat, new_coords);
+                        new_points = true;
+                    }
                 }
-            } else {
-                let mut new_coords = HashSet::new();
-                new_coords.insert(lng);
-                map.insert(lat, new_coords);
-                new_points = true;
-            }
-        }
 
-        if !new_points {
+                if !new_points {
+                    remove_files.push(file.name.clone());
+                }
+            }
+        });
+    }
+
+    // Remove all other
+    parsed_files.iter().for_each(|file| {
+        if !activity_types.contains(&file.trk_type.as_str()) {
+            if options.verbose {
+                println!("Found unknown type: {}", file.trk_type);
+            }
             remove_files.push(file.name.clone());
         }
     });
@@ -260,14 +285,16 @@ fn remove_straight_line_points(parsed_files: &mut Vec<CoordsFile>, options: &Opt
 fn output_result_files(parsed_files: &Vec<CoordsFile>, options: &Options) {
     // Final step: write new files
     fs::create_dir_all(&options.output_path_str).unwrap();
+    let out_path = Path::new(&options.output_path_str);
 
     for file in parsed_files {
         let base_path = Path::new(&file.name);
         let filename = base_path.file_name().unwrap();
         let filename_str = filename.to_str().unwrap().replace(".gpx", ".js");
 
-        let out_path = Path::new(&options.output_path_str);
-        let file_out_path = out_path.join(filename_str);
+        let file_out_path = out_path.join("coords_".to_owned() + &file.trk_type);
+        fs::create_dir_all(file_out_path.to_str().unwrap()).unwrap();
+        let file_out_path = file_out_path.join(filename_str);
 
         if options.verbose {
             println!("Creating new file: {}", file_out_path.to_str().unwrap());
