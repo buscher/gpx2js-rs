@@ -2,6 +2,8 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fs;
 use std::fs::File;
+use std::io::BufRead;
+use std::io::BufReader;
 use std::io::Write;
 use std::path::Path;
 
@@ -34,6 +36,7 @@ struct Options {
     verbose: bool,
     output_path_str: String,
     gpx_path_str: String,
+    ignore_file_str: String,
 }
 
 fn parse_args() -> Options {
@@ -41,6 +44,7 @@ fn parse_args() -> Options {
         verbose: false,
         output_path_str: "".to_string(),
         gpx_path_str: "".to_string(),
+        ignore_file_str: "".to_string()
     };
 
     {
@@ -61,10 +65,34 @@ fn parse_args() -> Options {
                 "Output directory containing for the *.js files",
             )
             .required();
+        ap.refer(&mut options.ignore_file_str)
+            .add_option(
+                &["-s", "--skip-list"],
+                Store,
+                "File which contains activities to skip/ignore",
+            );
         ap.parse_args_or_exit();
     }
 
     options
+}
+
+fn read_skip_list(options: &Options) -> HashSet<String> {
+    let mut skip_list: HashSet<String> = HashSet::new();
+
+    let skip_path = Path::new(&options.ignore_file_str);
+
+    if !skip_path.exists() {
+        return skip_list;
+    }
+
+    let file = File::open(skip_path).expect("no such file");
+    let buf = BufReader::new(file);
+    for line in buf.lines() {
+        skip_list.insert(line.unwrap());
+    }
+
+    skip_list
 }
 
 fn read_files(options: &Options) -> Vec<CoordsFile> {
@@ -74,8 +102,11 @@ fn read_files(options: &Options) -> Vec<CoordsFile> {
 
     let mut parsed_files: Vec<CoordsFile> = Vec::new();
 
+    let skip_set = read_skip_list(&options);
+
     for path in paths {
-        let fullpath = path.unwrap().path().display().to_string();
+        let dir_entry = path.unwrap();
+        let fullpath = dir_entry.path().display().to_string();
         if options.verbose {
             println!("Reading: {}", fullpath);
         }
@@ -83,6 +114,15 @@ fn read_files(options: &Options) -> Vec<CoordsFile> {
         if !fullpath.ends_with(".gpx") {
             if options.verbose {
                 println!("Skipping: {}", fullpath);
+            }
+            continue;
+        }
+
+        let file_name = dir_entry.file_name();
+        let filename= file_name.to_str().unwrap();
+        if skip_set.contains(filename) {
+            if options.verbose {
+                println!("Skipping: {}, in skip list", fullpath);
             }
             continue;
         }
