@@ -21,6 +21,8 @@ struct CoordsFile {
     name: String,
     trk_type: String,
     coords: Vec<LatLng>,
+    min: LatLng,
+    max: LatLng,
 }
 
 fn round_val(value: f64, digits: u32) -> f64 {
@@ -37,6 +39,13 @@ struct Options {
     output_path_str: String,
     gpx_path_str: String,
     ignore_file_str: String,
+    html_output_str: String,
+    html_output: bool,
+}
+
+struct OverLap {
+    overlaps: HashSet<String>,
+    not_overlap: HashSet<String>
 }
 
 fn parse_args() -> Options {
@@ -44,7 +53,9 @@ fn parse_args() -> Options {
         verbose: false,
         output_path_str: "".to_string(),
         gpx_path_str: "".to_string(),
-        ignore_file_str: "".to_string()
+        ignore_file_str: "".to_string(),
+        html_output_str: "".to_string(),
+        html_output: false,
     };
 
     {
@@ -71,8 +82,16 @@ fn parse_args() -> Options {
                 Store,
                 "File which contains activities to skip/ignore",
             );
+        // TODO: incomplete, rewrite to color-map output, with filename and index
+        ap.refer(&mut options.html_output_str)
+            .add_option(
+                &["-e", "--extra-html_output"],
+                Store,
+                "Path to an extra HTML (part) output",
+            );
         ap.parse_args_or_exit();
     }
+    options.html_output = !options.html_output_str.is_empty();
 
     options
 }
@@ -131,6 +150,8 @@ fn read_files(options: &Options) -> Vec<CoordsFile> {
             name: fullpath.clone(),
             trk_type: "".to_string(),
             coords: vec![],
+            min: LatLng { lat: f64::MAX, lng: f64::MAX },
+            max: LatLng { lat: 0.0, lng: 0.0 },
         };
 
         let text = std::fs::read_to_string(fullpath).unwrap();
@@ -174,6 +195,21 @@ fn read_files(options: &Options) -> Vec<CoordsFile> {
                 }
 
                 coord_file.coords.push(LatLng { lat, lng });
+
+                // Save max/min
+                if lat > coord_file.max.lat {
+                    coord_file.max.lat = lat;
+                }
+                if lng > coord_file.max.lng {
+                    coord_file.max.lng = lng;
+                }
+                if lat < coord_file.min.lat {
+                    coord_file.min.lat = lat;
+                }
+                if lng < coord_file.min.lng {
+                    coord_file.min.lng = lng;
+                }
+
             }
         }
         parsed_files.push(coord_file);
@@ -366,6 +402,142 @@ fn count_points(parsed_files: &Vec<CoordsFile>) -> usize {
     sum
 }
 
+fn point_in_rect(x:f64, y: f64, file: &CoordsFile) -> bool {
+    if x >= file.min.lat && x <= file.max.lat &&
+       y >= file.min.lng && y <= file.max.lng {
+        return true;
+    }
+    false
+}
+
+fn boundary_overlap(file1: &CoordsFile, file2: &CoordsFile) -> bool {
+
+    // top left
+    if point_in_rect(file1.min.lat, file1.min.lng, &file2) {
+        return true;
+    }
+    // top right
+    if point_in_rect(file1.max.lat, file1.min.lng, &file2) {
+        return true;
+    }
+
+    // bottom left
+    if point_in_rect(file1.min.lat, file1.max.lng, &file2) {
+        return true;
+    }
+    // bottom right
+    if point_in_rect(file1.max.lat, file1.max.lng, &file2) {
+        return true;
+    }
+
+    false
+}
+
+fn point_overlap(file1: &CoordsFile, file2: &CoordsFile) -> bool {
+    for point in &file1.coords {
+        for point2 in &file2.coords {
+            if point == point2 {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
+/*
+fn insert_no_overlap(overlaps: &mut HashMap<String, OverLap>, not_overlap1: String, not_overlap2: String) {
+    if overlaps.contains_key(&not_overlap) {
+        
+    }
+}*/
+
+fn insert_overlap(overlaps: &mut HashMap<String, OverLap>, overlap: &String, overlap_with: &String) {
+    if overlaps.contains_key(overlap) {
+        let other_overlap = overlaps.get_mut(overlap).unwrap();
+        other_overlap.overlaps.insert(overlap_with.clone());
+    } else {
+        let mut sub_new_overlap: OverLap = OverLap { overlaps: HashSet::new(), not_overlap: HashSet::new() };
+        sub_new_overlap.overlaps.insert(overlap_with.clone());
+        overlaps.insert(overlap.clone(), sub_new_overlap);
+    }
+}
+
+fn insert_not_overlap(overlaps: &mut HashMap<String, OverLap>, not_overlap: &String, not_overlap_with: &String) {
+    if overlaps.contains_key(not_overlap) {
+        let other_overlap = overlaps.get_mut(not_overlap).unwrap();
+        if other_overlap.not_overlap.contains(not_overlap_with) {
+            other_overlap.not_overlap.insert(not_overlap_with.clone());
+        }
+    } else {
+        let mut sub_new_overlap: OverLap = OverLap { overlaps: HashSet::new(), not_overlap: HashSet::new() };
+        sub_new_overlap.not_overlap.insert(not_overlap_with.clone());
+        overlaps.insert(not_overlap.clone(), sub_new_overlap);
+    }
+}
+
+fn find_overlaps(parsed_files: &Vec<CoordsFile>, options: &Options) -> HashMap<String, OverLap> {
+    let mut overlaps: HashMap<String, OverLap> = HashMap::new();
+
+    for file in parsed_files {
+        let mut new_overlap: OverLap = OverLap { overlaps: HashSet::new(), not_overlap: HashSet::new() };
+
+        for sub_file in parsed_files {
+            if file.name == sub_file.name {
+                continue;
+            }
+
+            if overlaps.contains_key(&sub_file.name) {
+                let sub_overlap = overlaps.get(&sub_file.name).unwrap();
+                if sub_overlap.not_overlap.contains(&file.name) {
+                    continue;
+                }
+                if sub_overlap.overlaps.contains(&file.name) {
+                    continue;
+                }
+            }
+
+            if boundary_overlap(&file, &sub_file) {
+                /*
+                if options.verbose {
+                    println!("Found boundary overlap of {} and {}", file.name, sub_file.name)
+                }*/
+
+                if point_overlap(&file, &sub_file) {
+
+                    if options.verbose {
+                        println!("Found point overlap of {} and {}", file.name, sub_file.name)
+                    }
+
+                    new_overlap.overlaps.insert(sub_file.name.clone());
+
+                    insert_overlap(&mut overlaps, &sub_file.name, &file.name);
+                }  else {
+                    insert_not_overlap(&mut overlaps, &sub_file.name, &file.name);
+                }
+            } else {
+                insert_not_overlap(&mut overlaps, &sub_file.name, &file.name);
+            }
+        }
+
+        overlaps.insert(file.name.clone(), new_overlap);
+    }
+
+    overlaps
+}
+
+fn print_min_max(parsed_files: &Vec<CoordsFile>) {
+    for file in parsed_files {
+        println!("File: {}, min: {},{}, max: {},{}", file.name, file.min.lat, file.min.lng, file.max.lat, file.max.lng);
+    }
+}
+
+fn print_overlays(overlaps: &HashMap<String, OverLap>) {
+    for kv in overlaps {
+        println!("File: {}, overlaps: {}, not overlaps: {}", kv.0, kv.1.overlaps.len(), kv.1.not_overlap.len());
+    }
+}
+
 fn main() {
     let options = parse_args();
 
@@ -396,4 +568,17 @@ fn main() {
     println!("Final points: {}", count_points(&parsed_files));
 
     output_result_files(&parsed_files, &options);
+
+    // TODO incomplete... rewrite
+    if options.html_output {
+        if options.verbose || true {
+            print_min_max(&parsed_files)
+        }
+
+        let overlap_list = find_overlaps(&parsed_files, &options);
+
+        if options.verbose || true {
+            print_overlays(&overlap_list)
+        }
+    }
 }
