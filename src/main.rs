@@ -34,6 +34,15 @@ fn in_line(a: &LatLng, b: &LatLng, c: &LatLng) -> bool {
     (a.lat - c.lat) * (c.lng - b.lng) == (c.lat - b.lat) * (a.lng - c.lng)
 }
 
+struct CustomGroup {
+    name: String,
+    trk_type: String,
+    min_latlng: LatLng,
+    max_latlng: LatLng,
+    min_id: i64,
+    max_id: i64,
+}
+
 struct Options {
     verbose: bool,
     output_path_str: String,
@@ -41,6 +50,8 @@ struct Options {
     ignore_file_str: String,
     html_output_str: String,
     html_output: bool,
+    custom_group_str: String,
+    custom_groups: Vec<CustomGroup>
 }
 
 struct OverLap {
@@ -56,6 +67,8 @@ fn parse_args() -> Options {
         ignore_file_str: "".to_string(),
         html_output_str: "".to_string(),
         html_output: false,
+        custom_group_str: "".to_string(),
+        custom_groups: vec![],
     };
 
     {
@@ -89,11 +102,73 @@ fn parse_args() -> Options {
                 Store,
                 "Path to an extra HTML (part) output",
             );
+        ap.refer(&mut options.custom_group_str)
+            .add_option(
+                &["-c", "--custom-groups"],
+                Store,
+                "Path to a file with custom groups",
+            );
         ap.parse_args_or_exit();
     }
     options.html_output = !options.html_output_str.is_empty();
 
     options
+}
+
+fn read_custom_groups(options: & mut Options) {
+    let file = File::open(&options.custom_group_str).expect("no such file");
+    let buf = BufReader::new(file);
+    for line in buf.lines() {
+        let full_line = line.unwrap();
+        println!("line: {}", full_line);
+        let mut parts = full_line.split(";");
+        if parts.clone().count() != 8 {
+            println!("Invalid line: {}", full_line);
+            continue;
+        }
+
+        let mut custom_group : CustomGroup = CustomGroup {
+            name: "".to_string(),
+            trk_type: "".to_string(),
+            min_latlng: LatLng { lat: 0.0, lng: 0.0 },
+            max_latlng: LatLng { lat: 0.0, lng: 0.0 },
+            min_id: 0,
+            max_id: 0,
+        };
+        custom_group.name = parts.next().unwrap().to_string();
+        custom_group.trk_type = parts.next().unwrap().to_string();
+        custom_group.min_latlng.lat = parts.next().unwrap().to_string().parse::<f64>().unwrap();
+        custom_group.min_latlng.lng = parts.next().unwrap().to_string().parse::<f64>().unwrap();
+        custom_group.max_latlng.lat = parts.next().unwrap().to_string().parse::<f64>().unwrap();
+        custom_group.max_latlng.lng = parts.next().unwrap().to_string().parse::<f64>().unwrap();
+        custom_group.min_id = parts.next().unwrap().to_string().parse::<i64>().unwrap();
+        custom_group.max_id = parts.last().unwrap().to_string().parse::<i64>().unwrap();
+
+        options.custom_groups.push(custom_group);
+    }
+}
+
+fn point_in_bounds(point: &LatLng, min: &LatLng, max: &LatLng) -> bool {
+
+    //println!("point {} {} - min {} {} - max {} {}", point.lat, point.lng, min.lat, min.lng, max.lat, max.lng);
+
+    if point.lat >= min.lat && point.lat <= max.lat &&
+       point.lng >= min.lng && point.lng <= max.lng {
+        return true;
+    }
+    false
+}
+
+fn point_in_custom_group(coords_file: &CoordsFile, custom_group : &CustomGroup) -> bool {
+
+    if point_in_bounds(&coords_file.min, &custom_group.min_latlng, &custom_group.max_latlng) {
+        return true;
+    }
+    if point_in_bounds(&coords_file.max, &custom_group.min_latlng, &custom_group.max_latlng) {
+        return true;
+    }
+
+    false
 }
 
 fn read_skip_list(options: &Options) -> HashSet<String> {
@@ -112,6 +187,22 @@ fn read_skip_list(options: &Options) -> HashSet<String> {
     }
 
     skip_list
+}
+
+fn extract_number_from_filename(_filename: &str) -> Option<i64> {
+
+    let path = Path::new(_filename);
+    let filename = path.file_name().unwrap().to_str().unwrap();
+
+    let parts: Vec<&str> = filename.split(&['_', '.'][..]).collect();
+
+    if parts.len() >= 2 {
+        if let Ok(number) = parts[1].parse::<i64>() {
+            return Some(number);
+        }
+    }
+
+    None
 }
 
 fn read_files(options: &Options) -> Vec<CoordsFile> {
@@ -212,6 +303,34 @@ fn read_files(options: &Options) -> Vec<CoordsFile> {
 
             }
         }
+
+        for custom_group in &options.custom_groups {
+            if custom_group.trk_type.len() != 0 && coord_file.trk_type != custom_group.trk_type {
+                continue;
+            }
+
+            if !point_in_custom_group(&coord_file, custom_group) {
+                continue;
+            }
+
+            if custom_group.min_id != -1 && custom_group.max_id != -1 {
+                match extract_number_from_filename(&coord_file.name) {
+                    Some(number) => if number >= custom_group.min_id && number <= custom_group.max_id {
+                    } else {
+                        continue
+                    },
+                    None => {
+                        continue
+                    }
+                }
+            }
+
+            coord_file.trk_type = custom_group.name.clone();
+            if options.verbose {
+                println!("Overwriting trk type for file: {} to {}", coord_file.name, custom_group.trk_type)
+            }
+        }
+
         parsed_files.push(coord_file);
     }
 
@@ -254,7 +373,13 @@ fn remove_files_without_new_points(parsed_files: &mut Vec<CoordsFile>, options: 
     // - hiking and walking
     // - running
     // - cycling
-    let activity_types = ["walking", "running", "cycling"];
+    let mut activity_types: Vec<String> = vec!["walking".to_string(), "running".to_string(), "cycling".to_string()];
+    for custom_group in &options.custom_groups {
+        activity_types.push(custom_group.name.clone());
+    }
+
+    let activity_types_hash: HashSet<String> = activity_types.iter().map(|s| s.to_string()).collect();
+
     let mut remove_files: Vec<String> = Vec::new();
 
     for atype in activity_types {
@@ -292,8 +417,9 @@ fn remove_files_without_new_points(parsed_files: &mut Vec<CoordsFile>, options: 
     }
 
     // Remove all other
-    parsed_files.iter().for_each(|file| {
-        if !activity_types.contains(&file.trk_type.as_str()) {
+
+    parsed_files.iter().for_each(|file: &CoordsFile| {
+        if !activity_types_hash.contains(&file.trk_type) {
             if options.verbose {
                 println!("Found unknown type: {}", file.trk_type);
             }
@@ -539,7 +665,12 @@ fn print_overlays(overlaps: &HashMap<String, OverLap>) {
 }
 
 fn main() {
-    let options = parse_args();
+    let mut options = parse_args();
+
+    if !options.custom_group_str.is_empty() {
+        println!("Reading Custom Groups...");
+        read_custom_groups(&mut options);
+    }
 
     if options.verbose {
         println!("Input directory: {}", options.gpx_path_str);
